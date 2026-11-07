@@ -1,0 +1,105 @@
+
+# ==========================================
+# DevOps Task Board - Docker Ignore
+# ==========================================
+
+# Git repository and GitHub Actions
+.git
+.gitignore
+.github/
+
+# Python bytecode and cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Python virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Unit tests and coverage reports
+test/
+tests/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+pytest.ini
+.tox/
+.nox/
+
+# IDE and editor settings
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# Environment variables and secrets
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials/
+
+# Logs and temporary files
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+
+# Python build artifacts
+build/
+dist/
+*.egg
+*.egg-info/
+pip-wheel-metadata/
+
+# Documentation
+README.md
+docs/
+*.md
+
+# Kubernetes and GitOps manifests
+k8s/
+kubernetes/
+argocd/
+helm/
+charts/
+
+# Infrastructure as Code
+terraform/
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+
+# CI/CD and local orchestration files
+docker-compose*.yml
+docker-compose*.yaml
+compose*.yaml
+compose*.yml
+
+# Local databases and backups
+*.db
+*.sqlite
+*.sqlite3
+*.bak
+backups/
+
+# Docker metadata
+Dockerfile*
+.dockerignore
