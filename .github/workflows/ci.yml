@@ -1,0 +1,333 @@
+
+name: DevOps Task Board - Secure CI
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+permissions:
+  contents: read
+
+concurrency:
+  group: task-board-ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  IMAGE_NAME: devops-task-board
+  IMAGE_TAG: ci
+
+jobs:
+
+  # ============================================
+  # JOB 1: CODE QUALITY, SAST AND PYTEST
+  # ============================================
+
+  static-analysis:
+    name: Static Analysis and Unit Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install CI dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            -r .github/ci-requirements.txt
+
+      - name: Check Python formatting
+        run: |
+          black --check --diff \
+            devops-task-board/ test/
+
+      - name: Python linting with Flake8
+        run: |
+          flake8 devops-task-board/ test/ \
+            --max-line-length=88 \
+            --extend-ignore=E203,W503 \
+            --show-source \
+            --statistics
+
+      - name: Static security analysis with Bandit
+        run: |
+          # B104 is excluded because the application
+          # intentionally binds to 0.0.0.0:8080
+          # for container networking.
+          #
+          # All other Bandit rules remain enabled.
+          # -ll: medium/high severity
+          # -ii: medium/high confidence
+
+          bandit -r devops-task-board/ \
+            -ll \
+            -ii \
+            -s B104 \
+            -f txt
+
+      - name: Run pytest
+        run: |
+          python -m pytest test/ \
+            -v \
+            --tb=short
+
+  # ============================================
+  # JOB 2: SECRET SCANNING
+  # ============================================
+
+  secret-scanning:
+    name: Secret Scanning
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ============================================
+  # JOB 3: DOCKER BUILD, SECURITY AND API TESTS
+  # ============================================
+
+  docker-security:
+    name: Docker Build, Security and API Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    needs:
+      - static-analysis
+      - secret-scanning
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          load: true
+          tags: devops-task-board:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan Docker image with Trivy
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          image-ref: devops-task-board:ci
+          format: table
+          exit-code: "1"
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+
+      - name: Verify non-root image configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMAGE_USER=$(docker image inspect \
+            devops-task-board:ci \
+            --format '{{.Config.User}}')
+
+          echo "Image user: $IMAGE_USER"
+
+          if [ "$IMAGE_USER" != "65532:65532" ]; then
+            echo "ERROR: Image must use UID/GID 65532."
+            exit 1
+          fi
+
+      - name: Start hardened test container
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker run -d \
+            --name task-board-ci \
+            --read-only \
+            --cap-drop=ALL \
+            --security-opt=no-new-privileges \
+            --pids-limit=100 \
+            --memory=256m \
+            --cpus=1 \
+            -p 127.0.0.1:8080:8080 \
+            devops-task-board:ci
+
+          echo "Waiting for application startup..."
+
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent \
+              http://127.0.0.1:8080/healthcheck \
+              > /dev/null; then
+              echo "Application started successfully."
+              exit 0
+            fi
+
+            sleep 2
+          done
+
+          echo "ERROR: Application failed to start."
+          docker logs task-board-ci
+          exit 1
+
+      - name: Verify runtime security
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker exec task-board-ci python -c \
+            "import os; assert os.getuid() == 65532"
+
+          docker inspect task-board-ci \
+            --format '{{.HostConfig.ReadonlyRootfs}}' \
+            | grep -qx true
+
+          docker inspect task-board-ci \
+            --format '{{.HostConfig.SecurityOpt}}' \
+            | grep -q no-new-privileges
+
+          echo "Runtime security checks passed."
+
+      - name: Run live API integration tests
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BASE_URL="http://127.0.0.1:8080"
+
+          echo "1. Health check"
+          curl -fsS "$BASE_URL/healthcheck" \
+            | jq -e '.status == "healthy"'
+
+          echo "2. Readiness check"
+          curl -fsS "$BASE_URL/readyz" \
+            | jq -e '.status == "ready"'
+
+          echo "3. List tasks"
+          curl -fsS "$BASE_URL/api/tasks" \
+            | jq -e '.tasks | type == "array"'
+
+          echo "4. Create task"
+          CREATE_RESPONSE=$(curl -fsS \
+            -X POST "$BASE_URL/api/tasks" \
+            -H "Content-Type: application/json" \
+            -d '{"title":"CI Integration Task"}')
+
+          TASK_ID=$(echo "$CREATE_RESPONSE" \
+            | jq -r '.id')
+
+          test "$TASK_ID" != "null"
+          test -n "$TASK_ID"
+
+          echo "Created task: $TASK_ID"
+
+          echo "5. Complete task"
+          curl -fsS \
+            -X PATCH \
+            "$BASE_URL/api/tasks/$TASK_ID" \
+            -H "Content-Type: application/json" \
+            -d '{"done":true}' \
+            | jq -e '.done == true'
+
+          echo "6. Verify task was updated"
+          curl -fsS "$BASE_URL/api/tasks" \
+            | jq -e \
+              --argjson id "$TASK_ID" \
+              'any(.tasks[]; .id == $id and .done == true)'
+
+          echo "7. Delete task"
+          curl -fsS \
+            -X DELETE \
+            "$BASE_URL/api/tasks/$TASK_ID" \
+            | jq -e \
+              --argjson id "$TASK_ID" \
+              '.deleted == $id'
+
+          echo "8. Verify task was deleted"
+          curl -fsS "$BASE_URL/api/tasks" \
+            | jq -e \
+              --argjson id "$TASK_ID" \
+              'all(.tasks[]; .id != $id)'
+
+          echo "9. Reject empty task title"
+          STATUS=$(curl -s \
+            -o /dev/null \
+            -w "%{http_code}" \
+            -X POST "$BASE_URL/api/tasks" \
+            -H "Content-Type: application/json" \
+            -d '{"title":""}')
+
+          test "$STATUS" = "400"
+
+          echo "10. Reject oversized title"
+          LONG_TITLE=$(printf 'A%.0s' {1..121})
+
+          STATUS=$(curl -s \
+            -o /dev/null \
+            -w "%{http_code}" \
+            -X POST "$BASE_URL/api/tasks" \
+            -H "Content-Type: application/json" \
+            -d "{\"title\":\"$LONG_TITLE\"}")
+
+          test "$STATUS" = "400"
+
+          echo "11. Reject nonexistent task"
+          STATUS=$(curl -s \
+            -o /dev/null \
+            -w "%{http_code}" \
+            -X DELETE \
+            "$BASE_URL/api/tasks/999999")
+
+          test "$STATUS" = "404"
+
+          echo "12. Serve frontend"
+          curl -fsS "$BASE_URL/" \
+            | grep -q "DevOps Task Board"
+
+          echo "13. Serve CSS"
+          curl -fsS "$BASE_URL/static/styles.css" \
+            > /dev/null
+
+          echo "14. Serve JavaScript"
+          curl -fsS "$BASE_URL/static/app.js" \
+            > /dev/null
+
+          echo "All live integration tests passed."
+
+      - name: Show application logs on failure
+        if: failure()
+        run: |
+          docker logs task-board-ci || true
+
+      - name: Remove test container
+        if: always()
+        run: |
+          docker rm -f task-board-ci || true
