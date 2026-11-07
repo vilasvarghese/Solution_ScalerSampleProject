@@ -1,0 +1,124 @@
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport"
+        content="width=device-width, initial-scale=1">
+
+  <title>DevOps Task Board</title>
+
+  <link rel="icon"
+        href="/static/images/logo.svg"
+        type="image/svg+xml">
+
+  <link rel="stylesheet"
+        href="/static/styles.css">
+
+  <script src="/static/app.js" defer></script>
+</head>
+
+<body>
+  <main class="shell">
+
+    <header class="header">
+      <div class="brand">
+        <img src="/static/images/logo.svg"
+             alt="DevOps Task Board logo">
+
+        <span>
+          DevOps <strong>Task Board</strong>
+        </span>
+      </div>
+
+      <span class="environment">
+        ● LAB ENVIRONMENT
+      </span>
+    </header>
+
+    <section class="hero">
+      <div>
+        <p class="eyebrow">
+          YOUR ENGINEERING WORKSPACE
+        </p>
+
+        <h1>
+          Ship better.<br>
+          <span>Track everything.</span>
+        </h1>
+
+        <p class="subtitle">
+          A lightweight task manager built for
+          DevOps practice, Kubernetes deployments,
+          and automation experiments.
+        </p>
+      </div>
+
+      <div class="hero-art">
+        <img src="/static/images/empty-state.svg"
+             alt="Illustration of a checklist">
+      </div>
+    </section>
+
+    <section class="stats" aria-label="Task statistics">
+      <div>
+        <span>Total tasks</span>
+        <strong id="total">0</strong>
+      </div>
+
+      <div>
+        <span>In progress</span>
+        <strong id="pending">0</strong>
+      </div>
+
+      <div>
+        <span>Completed</span>
+        <strong id="completed">0</strong>
+      </div>
+    </section>
+
+    <section class="panel">
+
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">SPRINT OVERVIEW</p>
+          <h2>My Tasks</h2>
+        </div>
+
+        <span id="count" class="count">
+          0 tasks
+        </span>
+      </div>
+
+      <form id="task-form">
+        <input
+          id="task-title"
+          maxlength="120"
+          required
+          placeholder="What needs to get done?"
+          aria-label="New task title"
+        >
+
+        <button type="submit">
+          + Add Task
+        </button>
+      </form>
+
+      <p id="message"
+         class="message"
+         role="status"></p>
+
+      <div id="task-list" class="task-list"></div>
+
+    </section>
+
+    <footer>
+      Built for DevOps learning ·
+      Python standard library ·
+      Port 8080
+    </footer>
+
+  </main>
+</body>
+</html>
+
