@@ -1,50 +1,66 @@
 
-# ==========================================
-# DevOps Task Board - Docker Ignore
-# ==========================================
+# ============================================
+# DevOps Task Board - Docker Build Exclusions
+# ============================================
 
-# Git repository and GitHub Actions
+# --------------------------------------------
+# Version control
+# --------------------------------------------
+
 .git
 .gitignore
 .github/
 
-# Python bytecode and cache
+# --------------------------------------------
+# Python bytecode and caches
+# --------------------------------------------
+
 __pycache__/
-*.py[cod]
-*$py.class
+*.pyc
+*.pyo
+*.pyd
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 
-# Python virtual environments
+# --------------------------------------------
+# Virtual environments
+# --------------------------------------------
+
 .venv/
 venv/
 env/
 ENV/
 
-# Unit tests and coverage reports
+# --------------------------------------------
+# Tests and coverage
+# --------------------------------------------
+
 test/
 tests/
 .coverage
 .coverage.*
 htmlcov/
 coverage.xml
-pytest.ini
 .tox/
 .nox/
 
-# IDE and editor settings
+# --------------------------------------------
+# Editor and OS files
+# --------------------------------------------
+
 .vscode/
 .idea/
+.DS_Store
+Thumbs.db
 *.swp
 *.swo
 *~
 
-# Operating system files
-.DS_Store
-Thumbs.db
+# --------------------------------------------
+# Secrets and environment files
+# --------------------------------------------
 
-# Environment variables and secrets
 .env
 .env.*
 *.pem
@@ -54,52 +70,75 @@ Thumbs.db
 secrets/
 credentials/
 
+# --------------------------------------------
 # Logs and temporary files
+# --------------------------------------------
+
 *.log
 logs/
 tmp/
 temp/
 *.tmp
 
-# Python build artifacts
+# --------------------------------------------
+# Build artifacts
+# --------------------------------------------
+
 build/
 dist/
 *.egg
 *.egg-info/
-pip-wheel-metadata/
 
+# --------------------------------------------
 # Documentation
+# --------------------------------------------
+
 README.md
 docs/
 *.md
 
-# Kubernetes and GitOps manifests
+# --------------------------------------------
+# Kubernetes and GitOps
+# --------------------------------------------
+
 k8s/
 kubernetes/
 argocd/
 helm/
 charts/
 
+# --------------------------------------------
 # Infrastructure as Code
+# --------------------------------------------
+
 terraform/
 .terraform/
 *.tfstate
 *.tfstate.*
 *.tfvars
 
-# CI/CD and local orchestration files
-docker-compose*.yml
-docker-compose*.yaml
-compose*.yaml
-compose*.yml
+# --------------------------------------------
+# Local database files
+# --------------------------------------------
 
-# Local databases and backups
 *.db
 *.sqlite
 *.sqlite3
 *.bak
 backups/
 
-# Docker metadata
+# --------------------------------------------
+# Docker Compose
+# --------------------------------------------
+
+docker-compose*.yml
+docker-compose*.yaml
+compose*.yml
+compose*.yaml
+
+# --------------------------------------------
+# Docker build metadata
+# --------------------------------------------
+
 Dockerfile*
 .dockerignore
