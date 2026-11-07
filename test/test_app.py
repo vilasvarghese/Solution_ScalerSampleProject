@@ -1,462 +1,651 @@
 
+"""
+Integration and API tests for DevOps Task Board.
+
+Run from the repository root:
+
+    python -m pytest test/ -v
+
+The application is loaded from:
+    devops-task-board/app.py
+"""
+
+import copy
 import importlib.util
 import json
-import os
+import logging
 import sys
 import threading
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
 
-# --------------------------------------------------
-# Locate and import application
-# --------------------------------------------------
+# ==================================================
+# APPLICATION IMPORT
+# ==================================================
 
-current_dir = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+APP_DIR = PROJECT_ROOT / "devops-task-board"
+APP_PATH = APP_DIR / "app.py"
 
-app_path = os.path.abspath(
-    os.path.join(current_dir, "..", "app", "app.py")
-)
-
-if not os.path.exists(app_path):
+if not APP_PATH.is_file():
     raise FileNotFoundError(
-        f"Could not find app.py at {app_path}"
+        f"Application not found at {APP_PATH}"
     )
 
 spec = importlib.util.spec_from_file_location(
-    "app_module",
-    app_path
+    "devops_task_board_app",
+    APP_PATH,
 )
 
+if spec is None or spec.loader is None:
+    raise ImportError(
+        f"Unable to import application from {APP_PATH}"
+    )
+
 app = importlib.util.module_from_spec(spec)
-sys.modules["app_module"] = app
+sys.modules[spec.name] = app
 spec.loader.exec_module(app)
 
 Handler = app.Handler
 
 
-# --------------------------------------------------
-# Test Server Fixture
-# --------------------------------------------------
+# ==================================================
+# INITIAL APPLICATION STATE
+# ==================================================
+
+# Capture initial tasks without assuming their titles
+# or how many sample tasks exist.
+
+with app.LOCK:
+    INITIAL_TASKS = copy.deepcopy(app.TASKS)
+    INITIAL_NEXT_ID = app.NEXT_ID
+
+
+# ==================================================
+# TEST FIXTURES
+# ==================================================
 
 @pytest.fixture(scope="module")
 def test_server():
     """
-    Start the application's HTTP server on a
-    randomly allocated local port.
+    Start a real HTTP server on a random free port.
+
+    Use the application directory as the working
+    directory to support relative static file paths.
     """
 
-    server = ThreadingHTTPServer(
-        ("127.0.0.1", 0),
-        Handler
-    )
+    import os
 
-    port = server.server_address[1]
+    original_directory = Path.cwd()
+    server = None
+    thread = None
 
-    thread = threading.Thread(
-        target=server.serve_forever,
-        daemon=True
-    )
+    try:
+        os.chdir(APP_DIR)
 
-    thread.start()
+        server = ThreadingHTTPServer(
+            ("127.0.0.1", 0),
+            Handler,
+        )
 
-    yield f"http://127.0.0.1:{port}"
+        thread = threading.Thread(
+            target=server.serve_forever,
+            daemon=True,
+        )
 
-    server.shutdown()
-    server.server_close()
-    thread.join(timeout=5)
+        thread.start()
 
+        port = server.server_address[1]
 
-# --------------------------------------------------
-# Reset task data before each test
-# --------------------------------------------------
+        yield f"http://127.0.0.1:{port}"
+
+    finally:
+        if server is not None:
+            server.shutdown()
+            server.server_close()
+
+        if thread is not None:
+            thread.join(timeout=5)
+
+        os.chdir(original_directory)
+
 
 @pytest.fixture(autouse=True)
-def reset_tasks():
+def reset_application_state():
     """
-    Ensure tests are independent by restoring
-    the original application task state.
+    Restore the original in-memory task state
+    before and after every test.
     """
 
-    with app.LOCK:
-        app.TASKS.clear()
+    def restore():
+        with app.LOCK:
+            app.TASKS.clear()
+            app.TASKS.extend(
+                copy.deepcopy(INITIAL_TASKS)
+            )
+            app.NEXT_ID = INITIAL_NEXT_ID
 
-        app.TASKS.extend([
-            {
-                "id": 1,
-                "title": "Build Docker image",
-                "done": True
-            },
-            {
-                "id": 2,
-                "title": "Deploy application to Kubernetes",
-                "done": False
-            },
-            {
-                "id": 3,
-                "title": "Configure Prometheus monitoring",
-                "done": False
-            }
-        ])
+    restore()
 
-        app.NEXT_ID = 4
+    yield
+
+    restore()
 
 
-# --------------------------------------------------
-# Helper for HTTP requests
-# --------------------------------------------------
+# ==================================================
+# HTTP REQUEST HELPER
+# ==================================================
 
 def make_request(
     base_url,
     path,
     method="GET",
-    payload=None
+    payload=None,
+    raw_data=None,
+    content_type=None,
 ):
     """
-    Send HTTP requests and return:
-    (status_code, response_body, headers)
+    Send a request to the application.
+
+    Return:
+        (status_code, response_body, headers)
+
+    HTTP 4xx and 5xx responses are returned rather
+    than raised, so tests can assert error behavior.
     """
 
     headers = {}
-
     data = None
 
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
-
         headers["Content-Type"] = "application/json"
 
+    elif raw_data is not None:
+        data = raw_data
+
+        if content_type is not None:
+            headers["Content-Type"] = content_type
+
     request = urllib.request.Request(
-        f"{base_url}{path}",
+        url=f"{base_url}{path}",
         data=data,
         headers=headers,
-        method=method
+        method=method,
     )
 
     try:
         response = urllib.request.urlopen(
             request,
-            timeout=5
+            timeout=5,
         )
 
     except urllib.error.HTTPError as error:
         response = error
 
     with response:
-        body = response.read().decode("utf-8")
+        response_body = response.read().decode(
+            "utf-8"
+        )
 
         return (
             response.status,
-            body,
-            response.headers
+            response_body,
+            response.headers,
         )
+
+
+def get_json(base_url, path):
+    """
+    Request JSON and return the parsed object.
+    """
+
+    status, body, headers = make_request(
+        base_url,
+        path,
+    )
+
+    assert status == 200
+    assert "application/json" in headers.get(
+        "Content-Type", ""
+    )
+
+    return json.loads(body)
+
+
+def create_task(base_url, title):
+    """
+    Create a task and return its JSON response.
+    """
+
+    status, body, headers = make_request(
+        base_url,
+        "/api/tasks",
+        method="POST",
+        payload={"title": title},
+    )
+
+    assert status == 201
+
+    return json.loads(body)
 
 
 # ==================================================
 # HEALTH CHECK TESTS
 # ==================================================
 
-def test_healthcheck_status_200(test_server):
-
-    status, body, headers = make_request(
+def test_healthcheck_returns_200(test_server):
+    status, _, _ = make_request(
         test_server,
-        "/healthcheck"
+        "/healthcheck",
     )
 
     assert status == 200
 
 
-def test_healthcheck_response_body(test_server):
-
-    status, body, headers = make_request(
+def test_healthcheck_returns_healthy(test_server):
+    data = get_json(
         test_server,
-        "/healthcheck"
+        "/healthcheck",
     )
-
-    data = json.loads(body)
 
     assert data["status"] == "healthy"
 
 
-def test_healthcheck_content_type(test_server):
-
-    status, body, headers = make_request(
+def test_healthcheck_contains_timestamp(test_server):
+    data = get_json(
         test_server,
-        "/healthcheck"
+        "/healthcheck",
     )
-
-    assert "application/json" in headers.get(
-        "Content-Type", ""
-    )
-
-
-def test_healthcheck_has_timestamp(test_server):
-
-    status, body, headers = make_request(
-        test_server,
-        "/healthcheck"
-    )
-
-    data = json.loads(body)
 
     assert "timestamp" in data
     assert isinstance(data["timestamp"], str)
+    assert data["timestamp"]
+
+
+def test_healthcheck_content_type(test_server):
+    status, _, headers = make_request(
+        test_server,
+        "/healthcheck",
+    )
+
+    assert status == 200
+    assert "application/json" in headers.get(
+        "Content-Type", ""
+    )
 
 
 # ==================================================
 # READINESS TESTS
 # ==================================================
 
-def test_readyz_status_200(test_server):
-
-    status, body, headers = make_request(
+def test_readiness_returns_200(test_server):
+    status, _, _ = make_request(
         test_server,
-        "/readyz"
+        "/readyz",
     )
 
     assert status == 200
 
 
-def test_readyz_response_body(test_server):
-
-    status, body, headers = make_request(
+def test_readiness_returns_ready(test_server):
+    data = get_json(
         test_server,
-        "/readyz"
+        "/readyz",
     )
 
-    data = json.loads(body)
-
     assert data["status"] == "ready"
+
+
+def test_readiness_contains_timestamp(test_server):
+    data = get_json(
+        test_server,
+        "/readyz",
+    )
+
+    assert "timestamp" in data
 
 
 # ==================================================
 # TASK LISTING TESTS
 # ==================================================
 
-def test_get_tasks_status_200(test_server):
-
-    status, body, headers = make_request(
+def test_list_tasks_returns_200(test_server):
+    status, _, _ = make_request(
         test_server,
-        "/api/tasks"
+        "/api/tasks",
     )
 
     assert status == 200
 
 
-def test_get_tasks_returns_json(test_server):
-
-    status, body, headers = make_request(
+def test_list_tasks_returns_json(test_server):
+    data = get_json(
         test_server,
-        "/api/tasks"
+        "/api/tasks",
     )
-
-    data = json.loads(body)
 
     assert "tasks" in data
     assert isinstance(data["tasks"], list)
 
 
-def test_get_tasks_initial_count(test_server):
-
-    status, body, headers = make_request(
+def test_list_tasks_has_initial_data(test_server):
+    data = get_json(
         test_server,
-        "/api/tasks"
+        "/api/tasks",
     )
 
-    data = json.loads(body)
+    assert len(data["tasks"]) == len(INITIAL_TASKS)
 
-    assert len(data["tasks"]) == 3
+
+def test_tasks_have_expected_fields(test_server):
+    data = get_json(
+        test_server,
+        "/api/tasks",
+    )
+
+    assert data["tasks"]
+
+    for task in data["tasks"]:
+        assert "id" in task
+        assert "title" in task
+        assert "done" in task
+
+        assert isinstance(task["id"], int)
+        assert isinstance(task["title"], str)
+        assert isinstance(task["done"], bool)
 
 
 # ==================================================
 # TASK CREATION TESTS
 # ==================================================
 
-def test_create_task_success(test_server):
-
-    status, body, headers = make_request(
+def test_create_task_returns_201(test_server):
+    status, _, _ = make_request(
         test_server,
         "/api/tasks",
         method="POST",
         payload={
-            "title": "Deploy application to EKS"
-        }
+            "title": "Deploy to Kubernetes"
+        },
     )
-
-    data = json.loads(body)
 
     assert status == 201
 
-    assert data["title"] == (
-        "Deploy application to EKS"
+
+def test_create_task_returns_correct_title(test_server):
+    task = create_task(
+        test_server,
+        "Configure Prometheus",
     )
 
-    assert data["done"] is False
+    assert task["title"] == "Configure Prometheus"
 
-    assert data["id"] == 4
+
+def test_new_task_is_incomplete(test_server):
+    task = create_task(
+        test_server,
+        "Configure Grafana",
+    )
+
+    assert task["done"] is False
+
+
+def test_new_task_has_numeric_id(test_server):
+    task = create_task(
+        test_server,
+        "Create CI pipeline",
+    )
+
+    assert isinstance(task["id"], int)
+    assert task["id"] > 0
 
 
 def test_create_task_increases_count(test_server):
-
-    make_request(
+    before = get_json(
         test_server,
         "/api/tasks",
-        method="POST",
-        payload={
-            "title": "Configure Grafana"
-        }
     )
 
-    status, body, headers = make_request(
+    create_task(
         test_server,
-        "/api/tasks"
+        "Create Docker image",
     )
 
-    data = json.loads(body)
-
-    assert len(data["tasks"]) == 4
-
-
-def test_create_task_empty_title(test_server):
-
-    status, body, headers = make_request(
+    after = get_json(
         test_server,
         "/api/tasks",
-        method="POST",
-        payload={
-            "title": ""
-        }
     )
 
-    assert status == 400
+    assert len(after["tasks"]) == (
+        len(before["tasks"]) + 1
+    )
 
 
-def test_create_task_whitespace_title(test_server):
+def test_created_task_appears_in_listing(test_server):
+    task = create_task(
+        test_server,
+        "Deploy with Argo CD",
+    )
 
-    status, body, headers = make_request(
+    data = get_json(
         test_server,
         "/api/tasks",
-        method="POST",
-        payload={
-            "title": "   "
-        }
     )
 
-    assert status == 400
+    ids = [
+        item["id"]
+        for item in data["tasks"]
+    ]
+
+    assert task["id"] in ids
 
 
-def test_create_task_missing_title(test_server):
-
-    status, body, headers = make_request(
+def test_multiple_tasks_have_unique_ids(test_server):
+    first = create_task(
         test_server,
-        "/api/tasks",
-        method="POST",
-        payload={}
+        "Task A",
     )
 
-    assert status == 400
-
-
-def test_create_task_title_too_long(test_server):
-
-    status, body, headers = make_request(
+    second = create_task(
         test_server,
-        "/api/tasks",
-        method="POST",
-        payload={
-            "title": "A" * 121
-        }
+        "Task B",
     )
 
-    assert status == 400
+    assert first["id"] != second["id"]
 
 
 def test_create_task_trims_whitespace(test_server):
+    task = create_task(
+        test_server,
+        "  Configure Argo CD  ",
+    )
 
-    status, body, headers = make_request(
+    assert task["title"] == "Configure Argo CD"
+
+
+# ==================================================
+# INPUT VALIDATION TESTS
+# ==================================================
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"title": ""},
+        {"title": "   "},
+        {"title": "A" * 121},
+        {"title": None},
+        {"title": 123},
+        {},
+    ],
+)
+def test_invalid_task_titles_rejected(
+    test_server,
+    payload,
+):
+    status, _, _ = make_request(
         test_server,
         "/api/tasks",
         method="POST",
-        payload={
-            "title": "  Configure ArgoCD  "
-        }
+        payload=payload,
     )
 
-    data = json.loads(body)
+    assert status == 400
 
-    assert status == 201
 
-    assert data["title"] == "Configure ArgoCD"
+def test_invalid_creation_does_not_add_task(
+    test_server,
+):
+    before = get_json(
+        test_server,
+        "/api/tasks",
+    )
+
+    status, _, _ = make_request(
+        test_server,
+        "/api/tasks",
+        method="POST",
+        payload={"title": ""},
+    )
+
+    after = get_json(
+        test_server,
+        "/api/tasks",
+    )
+
+    assert status == 400
+    assert len(after["tasks"]) == len(
+        before["tasks"]
+    )
+
+
+def test_title_at_maximum_length(test_server):
+    task = create_task(
+        test_server,
+        "A" * 120,
+    )
+
+    assert len(task["title"]) == 120
 
 
 # ==================================================
 # TASK UPDATE TESTS
 # ==================================================
 
-def test_mark_task_completed(test_server):
-
-    status, body, headers = make_request(
+def test_complete_task(test_server):
+    task = create_task(
         test_server,
-        "/api/tasks/2",
-        method="PATCH",
-        payload={
-            "done": True
-        }
+        "Complete Kubernetes lab",
     )
 
-    data = json.loads(body)
+    status, body, _ = make_request(
+        test_server,
+        f"/api/tasks/{task['id']}",
+        method="PATCH",
+        payload={"done": True},
+    )
+
+    updated = json.loads(body)
 
     assert status == 200
-
-    assert data["id"] == 2
-
-    assert data["done"] is True
+    assert updated["id"] == task["id"]
+    assert updated["done"] is True
 
 
 def test_mark_task_incomplete(test_server):
-
-    status, body, headers = make_request(
+    task = create_task(
         test_server,
-        "/api/tasks/1",
-        method="PATCH",
-        payload={
-            "done": False
-        }
+        "Practice Docker",
     )
 
-    data = json.loads(body)
+    make_request(
+        test_server,
+        f"/api/tasks/{task['id']}",
+        method="PATCH",
+        payload={"done": True},
+    )
+
+    status, body, _ = make_request(
+        test_server,
+        f"/api/tasks/{task['id']}",
+        method="PATCH",
+        payload={"done": False},
+    )
+
+    updated = json.loads(body)
 
     assert status == 200
+    assert updated["done"] is False
 
-    assert data["done"] is False
 
-
-def test_update_nonexistent_task(test_server):
-
-    status, body, headers = make_request(
+def test_updated_task_persists_in_memory(test_server):
+    task = create_task(
         test_server,
-        "/api/tasks/999",
+        "Review Kubernetes security",
+    )
+
+    make_request(
+        test_server,
+        f"/api/tasks/{task['id']}",
         method="PATCH",
-        payload={
-            "done": True
-        }
+        payload={"done": True},
+    )
+
+    data = get_json(
+        test_server,
+        "/api/tasks",
+    )
+
+    updated = next(
+        item
+        for item in data["tasks"]
+        if item["id"] == task["id"]
+    )
+
+    assert updated["done"] is True
+
+
+def test_update_nonexistent_task_returns_404(
+    test_server,
+):
+    status, _, _ = make_request(
+        test_server,
+        "/api/tasks/999999",
+        method="PATCH",
+        payload={"done": True},
     )
 
     assert status == 404
 
 
-def test_update_invalid_done_value(test_server):
-
-    status, body, headers = make_request(
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"done": "yes"},
+        {"done": 1},
+        {"done": None},
+        {},
+    ],
+)
+def test_invalid_update_rejected(
+    test_server,
+    payload,
+):
+    task = create_task(
         test_server,
-        "/api/tasks/1",
+        "Update validation test",
+    )
+
+    status, _, _ = make_request(
+        test_server,
+        f"/api/tasks/{task['id']}",
         method="PATCH",
-        payload={
-            "done": "yes"
-        }
+        payload=payload,
     )
 
     assert status == 400
@@ -466,45 +655,69 @@ def test_update_invalid_done_value(test_server):
 # TASK DELETION TESTS
 # ==================================================
 
-def test_delete_task_success(test_server):
-
-    status, body, headers = make_request(
+def test_delete_task_returns_200(test_server):
+    task = create_task(
         test_server,
-        "/api/tasks/2",
-        method="DELETE"
+        "Temporary task",
     )
 
-    data = json.loads(body)
+    status, _, _ = make_request(
+        test_server,
+        f"/api/tasks/{task['id']}",
+        method="DELETE",
+    )
 
     assert status == 200
 
-    assert data["deleted"] == 2
+
+def test_delete_task_returns_deleted_id(test_server):
+    task = create_task(
+        test_server,
+        "Remove task",
+    )
+
+    status, body, _ = make_request(
+        test_server,
+        f"/api/tasks/{task['id']}",
+        method="DELETE",
+    )
+
+    result = json.loads(body)
+
+    assert status == 200
+    assert result["deleted"] == task["id"]
 
 
-def test_delete_task_reduces_count(test_server):
+def test_deleted_task_disappears(test_server):
+    task = create_task(
+        test_server,
+        "Delete this task",
+    )
 
     make_request(
         test_server,
-        "/api/tasks/2",
-        method="DELETE"
+        f"/api/tasks/{task['id']}",
+        method="DELETE",
     )
 
-    status, body, headers = make_request(
+    data = get_json(
         test_server,
-        "/api/tasks"
+        "/api/tasks",
     )
 
-    data = json.loads(body)
+    assert all(
+        item["id"] != task["id"]
+        for item in data["tasks"]
+    )
 
-    assert len(data["tasks"]) == 2
 
-
-def test_delete_nonexistent_task(test_server):
-
-    status, body, headers = make_request(
+def test_delete_nonexistent_task_returns_404(
+    test_server,
+):
+    status, _, _ = make_request(
         test_server,
-        "/api/tasks/999",
-        method="DELETE"
+        "/api/tasks/999999",
+        method="DELETE",
     )
 
     assert status == 404
@@ -514,31 +727,28 @@ def test_delete_nonexistent_task(test_server):
 # FRONTEND TESTS
 # ==================================================
 
-def test_homepage_status_200(test_server):
-
-    status, body, headers = make_request(
+def test_homepage_returns_200(test_server):
+    status, _, _ = make_request(
         test_server,
-        "/"
+        "/",
     )
 
     assert status == 200
 
 
-def test_homepage_contains_title(test_server):
-
-    status, body, headers = make_request(
+def test_homepage_contains_app_name(test_server):
+    _, body, _ = make_request(
         test_server,
-        "/"
+        "/",
     )
 
     assert "DevOps Task Board" in body
 
 
 def test_homepage_content_type(test_server):
-
-    status, body, headers = make_request(
+    _, _, headers = make_request(
         test_server,
-        "/"
+        "/",
     )
 
     assert "text/html" in headers.get(
@@ -551,41 +761,41 @@ def test_homepage_content_type(test_server):
 # ==================================================
 
 @pytest.mark.parametrize(
-    "path,content_type",
+    "path,expected_content_type",
     [
-        ("/static/styles.css", "text/css"),
+        (
+            "/static/styles.css",
+            "text/css",
+        ),
         (
             "/static/app.js",
-            "application/javascript"
+            "javascript",
         ),
         (
             "/static/images/logo.svg",
-            "image/svg+xml"
+            "image/svg+xml",
         ),
         (
             "/static/images/empty-state.svg",
-            "image/svg+xml"
-        )
-    ]
+            "image/svg+xml",
+        ),
+    ],
 )
-def test_static_files(
+def test_static_files_served(
     test_server,
     path,
-    content_type
+    expected_content_type,
 ):
-
     status, body, headers = make_request(
         test_server,
-        path
+        path,
     )
 
     assert status == 200
-
-    assert content_type in headers.get(
+    assert body
+    assert expected_content_type in headers.get(
         "Content-Type", ""
     )
-
-    assert len(body) > 0
 
 
 # ==================================================
@@ -593,45 +803,43 @@ def test_static_files(
 # ==================================================
 
 def test_unknown_route_returns_404(test_server):
-
-    status, body, headers = make_request(
+    status, _, _ = make_request(
         test_server,
-        "/unknown"
+        "/unknown",
     )
 
     assert status == 404
 
 
-def test_unknown_api_route_returns_404(test_server):
-
-    status, body, headers = make_request(
+def test_unknown_api_route_returns_404(
+    test_server,
+):
+    status, _, _ = make_request(
         test_server,
-        "/api/unknown"
+        "/api/unknown",
     )
 
     assert status == 404
 
 
 def test_invalid_task_id_returns_404(test_server):
-
-    status, body, headers = make_request(
+    status, _, _ = make_request(
         test_server,
         "/api/tasks/invalid",
-        method="DELETE"
+        method="DELETE",
     )
 
     assert status == 404
 
 
 # ==================================================
-# RESPONSE HEADER TESTS
+# RESPONSE SECURITY TESTS
 # ==================================================
 
-def test_security_header_present(test_server):
-
-    status, body, headers = make_request(
+def test_content_type_options_header(test_server):
+    _, _, headers = make_request(
         test_server,
-        "/healthcheck"
+        "/healthcheck",
     )
 
     assert headers.get(
@@ -643,16 +851,15 @@ def test_security_header_present(test_server):
 # LOGGING TESTS
 # ==================================================
 
-def test_logger_exists():
-
-    assert app.logger is not None
-
-    assert app.logger.name == "devops-task-board"
-
-
-def test_logging_configuration():
-
-    assert app.logger.isEnabledFor(
-        app.logging.INFO
+def test_application_logger_exists():
+    assert hasattr(app, "logger")
+    assert isinstance(
+        app.logger,
+        logging.Logger,
     )
 
+
+def test_application_info_logging_enabled():
+    assert app.logger.isEnabledFor(
+        logging.INFO
+    )
