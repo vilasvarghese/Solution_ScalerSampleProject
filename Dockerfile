@@ -30,9 +30,9 @@ WORKDIR /app
 # --------------------------------------------------
 # 5. Copy only required application files
 # --------------------------------------------------
-COPY --chown=65532:65532 app/app.py ./app.py
-COPY --chown=65532:65532 app/index.html ./index.html
-COPY --chown=65532:65532 app/static/ ./static/
+COPY --chown=65532:65532 devops-task-board/app.py ./app.py
+COPY --chown=65532:65532 devops-task-board/index.html ./index.html
+COPY --chown=65532:65532 devops-task-board/static/ ./static/
 
 # --------------------------------------------------
 # 6. Run as a non-root user
