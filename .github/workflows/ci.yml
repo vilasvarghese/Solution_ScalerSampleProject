@@ -215,21 +215,24 @@ jobs:
           echo "Running Trivy vulnerability scan..."
 
           docker run --rm \
+            --user 0:0 \
             --security-opt=no-new-privileges \
             --cap-drop=ALL \
             --mount \
-              "type=bind,src=$RUNNER_TEMP,dst=/scan,readonly" \
+              "type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock" \
             "aquasec/trivy:${TRIVY_VERSION}" \
             image \
-            --input /scan/task-board-image.tar \
+            --image-src docker \
+            --scanners vuln \
+            --pkg-types os,library \
             --format table \
             --exit-code 1 \
             --ignore-unfixed \
-            --vuln-type os,library \
-            --severity HIGH,CRITICAL
+            --severity HIGH,CRITICAL \
+            devops-task-board:ci
 
           echo "Trivy vulnerability scan passed."
-
+      
       # ----------------------------------------
       # Verify non-root image configuration
       # ----------------------------------------
