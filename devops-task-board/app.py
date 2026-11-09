@@ -8,13 +8,17 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
     stream=sys.stdout,
+    force=True,
 )
 
 logger = logging.getLogger("devops-task-board")
+logger.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
 
 ROOT = Path(__file__).resolve().parent
 
