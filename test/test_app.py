@@ -1,4 +1,3 @@
-
 """
 Integration and API tests for DevOps Task Board.
 
@@ -33,9 +32,7 @@ APP_DIR = PROJECT_ROOT / "devops-task-board"
 APP_PATH = APP_DIR / "app.py"
 
 if not APP_PATH.is_file():
-    raise FileNotFoundError(
-        f"Application not found at {APP_PATH}"
-    )
+    raise FileNotFoundError(f"Application not found at {APP_PATH}")
 
 spec = importlib.util.spec_from_file_location(
     "devops_task_board_app",
@@ -43,9 +40,7 @@ spec = importlib.util.spec_from_file_location(
 )
 
 if spec is None or spec.loader is None:
-    raise ImportError(
-        f"Unable to import application from {APP_PATH}"
-    )
+    raise ImportError(f"Unable to import application from {APP_PATH}")
 
 app = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = app
@@ -69,6 +64,7 @@ with app.LOCK:
 # ==================================================
 # TEST FIXTURES
 # ==================================================
+
 
 @pytest.fixture(scope="module")
 def test_server():
@@ -125,9 +121,7 @@ def reset_application_state():
     def restore():
         with app.LOCK:
             app.TASKS.clear()
-            app.TASKS.extend(
-                copy.deepcopy(INITIAL_TASKS)
-            )
+            app.TASKS.extend(copy.deepcopy(INITIAL_TASKS))
             app.NEXT_ID = INITIAL_NEXT_ID
 
     restore()
@@ -140,6 +134,7 @@ def reset_application_state():
 # ==================================================
 # HTTP REQUEST HELPER
 # ==================================================
+
 
 def make_request(
     base_url,
@@ -189,9 +184,7 @@ def make_request(
         response = error
 
     with response:
-        response_body = response.read().decode(
-            "utf-8"
-        )
+        response_body = response.read().decode("utf-8")
 
         return (
             response.status,
@@ -211,9 +204,7 @@ def get_json(base_url, path):
     )
 
     assert status == 200
-    assert "application/json" in headers.get(
-        "Content-Type", ""
-    )
+    assert "application/json" in headers.get("Content-Type", "")
 
     return json.loads(body)
 
@@ -238,6 +229,7 @@ def create_task(base_url, title):
 # ==================================================
 # HEALTH CHECK TESTS
 # ==================================================
+
 
 def test_healthcheck_returns_200(test_server):
     status, _, _ = make_request(
@@ -275,14 +267,13 @@ def test_healthcheck_content_type(test_server):
     )
 
     assert status == 200
-    assert "application/json" in headers.get(
-        "Content-Type", ""
-    )
+    assert "application/json" in headers.get("Content-Type", "")
 
 
 # ==================================================
 # READINESS TESTS
 # ==================================================
+
 
 def test_readiness_returns_200(test_server):
     status, _, _ = make_request(
@@ -314,6 +305,7 @@ def test_readiness_contains_timestamp(test_server):
 # ==================================================
 # TASK LISTING TESTS
 # ==================================================
+
 
 def test_list_tasks_returns_200(test_server):
     status, _, _ = make_request(
@@ -365,14 +357,13 @@ def test_tasks_have_expected_fields(test_server):
 # TASK CREATION TESTS
 # ==================================================
 
+
 def test_create_task_returns_201(test_server):
     status, _, _ = make_request(
         test_server,
         "/api/tasks",
         method="POST",
-        payload={
-            "title": "Deploy to Kubernetes"
-        },
+        payload={"title": "Deploy to Kubernetes"},
     )
 
     assert status == 201
@@ -422,9 +413,7 @@ def test_create_task_increases_count(test_server):
         "/api/tasks",
     )
 
-    assert len(after["tasks"]) == (
-        len(before["tasks"]) + 1
-    )
+    assert len(after["tasks"]) == (len(before["tasks"]) + 1)
 
 
 def test_created_task_appears_in_listing(test_server):
@@ -438,10 +427,7 @@ def test_created_task_appears_in_listing(test_server):
         "/api/tasks",
     )
 
-    ids = [
-        item["id"]
-        for item in data["tasks"]
-    ]
+    ids = [item["id"] for item in data["tasks"]]
 
     assert task["id"] in ids
 
@@ -472,6 +458,7 @@ def test_create_task_trims_whitespace(test_server):
 # ==================================================
 # INPUT VALIDATION TESTS
 # ==================================================
+
 
 @pytest.mark.parametrize(
     "payload",
@@ -519,9 +506,7 @@ def test_invalid_creation_does_not_add_task(
     )
 
     assert status == 400
-    assert len(after["tasks"]) == len(
-        before["tasks"]
-    )
+    assert len(after["tasks"]) == len(before["tasks"])
 
 
 def test_title_at_maximum_length(test_server):
@@ -536,6 +521,7 @@ def test_title_at_maximum_length(test_server):
 # ==================================================
 # TASK UPDATE TESTS
 # ==================================================
+
 
 def test_complete_task(test_server):
     task = create_task(
@@ -601,11 +587,7 @@ def test_updated_task_persists_in_memory(test_server):
         "/api/tasks",
     )
 
-    updated = next(
-        item
-        for item in data["tasks"]
-        if item["id"] == task["id"]
-    )
+    updated = next(item for item in data["tasks"] if item["id"] == task["id"])
 
     assert updated["done"] is True
 
@@ -654,6 +636,7 @@ def test_invalid_update_rejected(
 # ==================================================
 # TASK DELETION TESTS
 # ==================================================
+
 
 def test_delete_task_returns_200(test_server):
     task = create_task(
@@ -705,10 +688,7 @@ def test_deleted_task_disappears(test_server):
         "/api/tasks",
     )
 
-    assert all(
-        item["id"] != task["id"]
-        for item in data["tasks"]
-    )
+    assert all(item["id"] != task["id"] for item in data["tasks"])
 
 
 def test_delete_nonexistent_task_returns_404(
@@ -726,6 +706,7 @@ def test_delete_nonexistent_task_returns_404(
 # ==================================================
 # FRONTEND TESTS
 # ==================================================
+
 
 def test_homepage_returns_200(test_server):
     status, _, _ = make_request(
@@ -751,14 +732,13 @@ def test_homepage_content_type(test_server):
         "/",
     )
 
-    assert "text/html" in headers.get(
-        "Content-Type", ""
-    )
+    assert "text/html" in headers.get("Content-Type", "")
 
 
 # ==================================================
 # STATIC FILE TESTS
 # ==================================================
+
 
 @pytest.mark.parametrize(
     "path,expected_content_type",
@@ -793,14 +773,13 @@ def test_static_files_served(
 
     assert status == 200
     assert body
-    assert expected_content_type in headers.get(
-        "Content-Type", ""
-    )
+    assert expected_content_type in headers.get("Content-Type", "")
 
 
 # ==================================================
 # ERROR HANDLING TESTS
 # ==================================================
+
 
 def test_unknown_route_returns_404(test_server):
     status, _, _ = make_request(
@@ -836,20 +815,20 @@ def test_invalid_task_id_returns_404(test_server):
 # RESPONSE SECURITY TESTS
 # ==================================================
 
+
 def test_content_type_options_header(test_server):
     _, _, headers = make_request(
         test_server,
         "/healthcheck",
     )
 
-    assert headers.get(
-        "X-Content-Type-Options"
-    ) == "nosniff"
+    assert headers.get("X-Content-Type-Options") == "nosniff"
 
 
 # ==================================================
 # LOGGING TESTS
 # ==================================================
+
 
 def test_application_logger_exists():
     assert hasattr(app, "logger")
@@ -860,6 +839,4 @@ def test_application_logger_exists():
 
 
 def test_application_info_logging_enabled():
-    assert app.logger.isEnabledFor(
-        logging.INFO
-    )
+    assert app.logger.isEnabledFor(logging.INFO)
