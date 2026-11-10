@@ -481,3 +481,165 @@ jobs:
         shell: bash
         run: |
           docker rm -f task-board-ci || true
+
+#continue 
+            image \
+            --image-src docker \
+            --scanners vuln \
+            --pkg-types os,library \
+            --format table \
+            --exit-code 1 \
+            --ignore-unfixed \
+            --severity HIGH,CRITICAL \
+            devops-task-board:ci
+
+          echo "Trivy vulnerability scan passed."
+      
+      # ----------------------------------------
+      # Verify non-root image configuration
+      # ----------------------------------------
+
+      - name: Verify non-root image configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMAGE_USER=$(docker image inspect \
+            devops-task-board:ci \
+            --format '{{.Config.User}}')
+
+          echo "Configured image user: $IMAGE_USER"
+
+          if [ "$IMAGE_USER" != "65532:65532" ]; then
+            echo "ERROR: Container image must run as UID/GID 65532."
+            exit 1
+          fi
+
+          echo "Non-root image configuration verified."
+
+      # ----------------------------------------
+      # Start application container
+      # ----------------------------------------
+
+      - name: Start hardened test container
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Starting DevOps Task Board container..."
+
+          docker run -d \
+            --name task-board-ci \
+            --read-only \
+            --cap-drop=ALL \
+            --security-opt=no-new-privileges \
+            --pids-limit=100 \
+            --memory=256m \
+            --cpus=1 \
+            -p 127.0.0.1:8080:8080 \
+            devops-task-board:ci
+
+          echo "Waiting for application startup..."
+
+          for attempt in $(seq 1 30); do
+
+            if curl --fail --silent \
+              http://127.0.0.1:8080/healthcheck \
+              > /dev/null; then
+
+              echo "Application started successfully."
+              exit 0
+
+            fi
+
+            echo "Waiting... attempt $attempt"
+            sleep 2
+
+          done
+
+          echo "ERROR: Application failed to start."
+          docker logs task-board-ci
+          exit 1
+
+      # ----------------------------------------
+      # Runtime security validation
+      # ----------------------------------------
+
+      - name: Verify runtime security
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Checking runtime user..."
+
+          docker exec task-board-ci python -c \
+            "import os; assert os.getuid() == 65532"
+
+          echo "Checking read-only filesystem..."
+
+          docker inspect task-board-ci \
+            --format '{{.HostConfig.ReadonlyRootfs}}' \
+            | grep -qx true
+
+          echo "Checking privilege escalation restrictions..."
+
+          docker inspect task-board-ci \
+            --format '{{.HostConfig.SecurityOpt}}' \
+            | grep -q no-new-privileges
+
+          echo "All runtime security checks passed."
+
+      # ----------------------------------------
+      # Live API integration tests
+      # ----------------------------------------
+
+      - name: Run live API integration tests
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BASE_URL="http://127.0.0.1:8080"
+
+          echo "================================="
+          echo "Starting API Integration Tests"
+          echo "================================="
+
+          echo "1. Health check"
+
+          curl -fsS "$BASE_URL/healthcheck" \
+            | jq -e '.status == "healthy"'
+
+          echo "2. Readiness check"
+
+          curl -fsS "$BASE_URL/readyz" \
+            | jq -e '.status == "ready"'
+
+          echo "3. Task listing"
+
+          curl -fsS "$BASE_URL/api/tasks" \
+            | jq -e '.tasks | type == "array"'
+
+          echo "4. Task creation"
+
+          CREATE_RESPONSE=$(curl -fsS \
+            -X POST \
+            "$BASE_URL/api/tasks" \
+            -H "Content-Type: application/json" \
+            -d '{"title":"CI Integration Task"}')
+
+          TASK_ID=$(echo "$CREATE_RESPONSE" \
+            | jq -r '.id')
+
+          test -n "$TASK_ID"
+          test "$TASK_ID" != "null"
+
+          echo "Created task ID: $TASK_ID"
+
+          echo "5. Complete task"
+
+          curl -fsS \
+            -X PATCH \
+            "$BASE_URL/api/tasks/$TASK_ID" \
+            -H "Content-Type: application/json" \
+            -d '{"done":true}' \
+            | jq -e '.done == true'
